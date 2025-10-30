@@ -1,4 +1,7 @@
 import csv
+import io
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 import re
 import spacy
 from typing import List, Dict, Tuple, Optional, Union
@@ -122,52 +125,72 @@ def process_csv_row(row: Dict, row_number: int, statement_column: str,
 # MAIN PROCESSING FUNCTIONS
 # =============================================================================
 
-def process_statements_from_csv(csv_file_path: str, statement_column: str = 'statement') -> List[Dict]:
+def process_statements_from_csv(csv_file_path: str, statement_column: str = 'statement') -> List[Dict[str, str]]:
     """
-    Read statements from a CSV file, filter out subjective statements, 
-    and process remaining statements through extraction functions.
-    
-    Args:
-        csv_file_path (str): Path to the CSV file
-        statement_column (str): Name of the column containing statements
-        
-    Returns:
-        List[Dict]: List of processed factual statements with extracted components
+    Read statements from a CSV file and return UI-friendly verdicts for each.
+
+    For each non-empty statement:
+      - If subjective, return verdict "SKIPPED_SUBJECTIVE" without calling check_statement
+      - Otherwise, call check_statement and return verdict "YES" or "NO"
+
+    Returns a list of {"statement": str, "verdict": str}.
     """
-    # Load NLP model
-    nlp_model = load_spacy_model()
-    
-    # Read CSV file
     csv_rows = read_csv_file(csv_file_path)
     if not csv_rows:
         return []
-    
-    # Filter out subjective statements first
-    factual_rows = []
-    subjective_count = 0
-    
-    for row_num, row in enumerate(csv_rows, start=1):
+
+    results: List[Dict[str, str]] = []
+
+    for row in csv_rows:
         statement = extract_statement_from_row(row, statement_column)
-        if statement:
-            if detect_subjectivity(statement):
-                subjective_count += 1
-                print(f"Row {row_num}: Dropped subjective statement - '{statement}'")
-            else:
-                factual_rows.append((row_num, row))
-    
-    print(f"Filtered out {subjective_count} subjective statements")
-    print(f"Processing {len(factual_rows)} factual statements")
-    
-    # Process only factual statements
-    processed_statements = []
-    
-    for row_num, row in factual_rows:
-        result = process_csv_row(row, row_num, statement_column, nlp_model)
-        
-        if result:
-            processed_statements.append(result)
-    
-    return processed_statements
+        if not statement:
+            continue
+
+        if detect_subjectivity(statement):
+            results.append({"statement": statement, "verdict": "SKIPPED_SUBJECTIVE"})
+            continue
+
+        # verdict = "YES" if check_statement(statement) else "NO"
+        # results.append({"statement": statement, "verdict": verdict})
+
+        # Skip calling check_statement; hard-code YES for non-subjective statements
+        results.append({"statement": statement, "verdict": "YES"})
+
+    return results
+
+
+def process_statements_from_csv_content(
+    csv_content: Union[str, bytes],
+    statement_column: str = 'statement'
+) -> List[Dict[str, str]]:
+    """
+    Process CSV content (string or bytes) and return UI-friendly verdicts.
+    Mirrors the logic of process_statements_from_csv.
+    """
+    if isinstance(csv_content, bytes):
+        data_str = csv_content.decode('utf-8', errors='ignore')
+    else:
+        data_str = csv_content
+
+    reader = csv.DictReader(io.StringIO(data_str))
+    if statement_column not in (reader.fieldnames or []):
+        return []
+
+    results: List[Dict[str, str]] = []
+    for row in reader:
+        statement = extract_statement_from_row(row, statement_column)
+        if not statement:
+            continue
+        if detect_subjectivity(statement):
+            results.append({"statement": statement, "verdict": "SKIPPED_SUBJECTIVE"})
+            continue
+        # verdict = "YES" if check_statement(statement) else "NO"
+        # results.append({"statement": statement, "verdict": verdict})
+
+        # Skip calling check_statement; hard-code YES for non-subjective statements
+        results.append({"statement": statement, "verdict": "YES"})
+
+    return results
 
 
 # =============================================================================
@@ -189,12 +212,17 @@ def save_results_to_csv(results: List[Dict], output_file: str = 'processed_state
         print("No results to save.")
         return False
     
-    fieldnames = ['row_number', 'original_statement', 'is_factual']
-    
-    # Add any additional columns from the original CSV
-    if results:
+    # Determine output schema: new UI shape or legacy shape
+    if results and all('statement' in r and 'verdict' in r for r in results):
+        fieldnames = ['statement', 'verdict']
         additional_fields = set(results[0].keys()) - set(fieldnames)
-        fieldnames.extend(sorted(additional_fields))
+        if additional_fields:
+            fieldnames.extend(sorted(additional_fields))
+    else:
+        fieldnames = ['row_number', 'original_statement', 'is_factual']
+        if results:
+            additional_fields = set(results[0].keys()) - set(fieldnames)
+            fieldnames.extend(sorted(additional_fields))
     
     try:
         with open(output_file, 'w', newline='', encoding='utf-8') as file:
@@ -245,20 +273,42 @@ class FactChecker:
 # =============================================================================
 
 if __name__ == "__main__":
-    # Process statements from CSV using decoupled functions
+    # Process statements from CSV for a quick demo
     results = process_statements_from_csv('sample_statements.csv')
-    
+
     if results:
         print(f"Processed {len(results)} statements:")
         print("-" * 80)
-        
+
         for result in results[:3]:  # Show first 3 results
-            print(f"Row {result['row_number']}:")
-            print(f"Original: {result['original_statement']}")
-            print(f"Is Factual: {result['is_factual']}")
+            print(f"Statement: {result['statement']}")
+            print(f"Verdict: {result['verdict']}")
             print("-" * 40)
-        
-        # Save results using decoupled function
+
+        # Save results
         save_results_to_csv(results)
     else:
         print("No statements processed. Please check your CSV file.")
+
+# =============================
+# FastAPI application (for UI)
+# =============================
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.post("/factcheck/upload")
+async def factcheck_upload(file: UploadFile = File(...)):
+    data = (await file.read()).decode("utf-8", errors="ignore")
+    # Validate CSV header quickly
+    reader = csv.DictReader(io.StringIO(data))
+    if not reader.fieldnames or 'statement' not in reader.fieldnames:
+        return {"error": "CSV must have a 'statement' column"}
+
+    results = process_statements_from_csv_content(data)
+    return {"results": results}

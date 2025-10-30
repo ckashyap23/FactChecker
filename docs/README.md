@@ -2,6 +2,14 @@
 
 A Python tool for processing statements from CSV files and extracting factual claims by removing subjective language. The system is built with a **decoupled architecture** where each function can be used independently.
 
+## 🤖 AI Model Support
+
+The system now supports two AI backend options:
+- **OpenAI** (default): Uses OpenAI API for LLM operations
+- **Local Mistral**: Uses locally downloaded Mistral-7B-Instruct-v0.3 model
+
+See [MISTRAL_INTEGRATION.md](MISTRAL_INTEGRATION.md) for details on local model usage.
+
 ## 🏗️ Architecture
 
 The system is built with a **modular architecture** where each core function is in its own module:
@@ -67,6 +75,15 @@ pip install -r requirements.txt
 2. Download the spaCy English model (optional):
 ```bash
 python -m spacy download en_core_web_sm
+```
+
+3. (Optional) Download Mistral model for local inference:
+```bash
+# Set your Hugging Face token first
+export HF_TOKEN=your_token_here
+# or add it to config.env
+
+python download_model.py
 ```
 
 ## 🔌 MCP Server Integration
